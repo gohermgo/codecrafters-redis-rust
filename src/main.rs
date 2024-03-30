@@ -152,10 +152,13 @@ fn main() -> io::Result<()> {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(mut _stream) => {
+            Ok(mut _stream) => loop {
                 println!("accepted new connection");
                 let mut buf = [0; 1024];
                 let bytes_read = _stream.read(&mut buf)?;
+                if bytes_read == 0 {
+                    break;
+                }
                 println!("read {bytes_read} bytes");
                 let s: String = buf[0..bytes_read]
                     .into_iter()
@@ -180,7 +183,7 @@ fn main() -> io::Result<()> {
                 // let command = RESPCommand::try_from(&buf[..bytes_read])?;
                 // _stream.write(command.to_string().as_bytes())?;
                 // _stream.write_all("PONG".as_bytes())?;
-            }
+            },
             Err(e) => {
                 println!("error: {}", e);
             }
