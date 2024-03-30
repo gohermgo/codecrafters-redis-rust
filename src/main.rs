@@ -177,10 +177,12 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
                     let command_opt = match elt {
                         RESPData::Str(s) | RESPData::BulkStr(s) => match RESPCommand::from_str(s) {
                             Ok(RESPCommand::Echo(mut to_echo)) => {
+                                println!("Replacing {to_echo}");
                                 to_echo = match elt_iter.next() {
                                     Some(RESPData::Str(s) | RESPData::BulkStr(s)) => *s,
                                     _ => to_echo,
                                 };
+                                println!("with {to_echo}");
                                 Some(RESPCommand::Echo(to_echo))
                             }
                             Ok(command) => Some(command),
