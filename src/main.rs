@@ -89,6 +89,7 @@ impl<'a> RESPData<'a> {
 
 pub enum RESPCommand<'a> {
     Ping(Option<&'a str>),
+    Echo(&'a str),
 }
 
 impl<'a> FromStr for RESPCommand<'a> {
@@ -125,6 +126,7 @@ impl fmt::Display for RESPCommand<'_> {
         match self {
             RESPCommand::Ping(Some(_payload)) => todo!(),
             RESPCommand::Ping(None) => f.write_str(RESPData::Str("PONG").to_string().as_str()),
+            RESPCommand::Echo(s) => f.write_str(RESPData::BulkStr(s).to_string().as_str()),
         }
     }
 }
@@ -187,42 +189,6 @@ fn main() -> io::Result<()> {
         match stream {
             Ok(mut _stream) => {
                 std::thread::spawn(|| handle_incoming(_stream));
-                // std::future::poll_fn()
-                // let mut fut = handle_incoming(_stream);
-                // let poll = std::task::Poll::from(fut);
-                // let x = std::future::poll_fn(|x| poll);
-                // let val = std::task::ready!(poll);
-                // std::future::poll_fn(|x| handle_incoming(_stream));
-                // println!("accepted new connection");
-                // let mut buf = [0; 1024];
-                // let bytes_read = _stream.read(&mut buf)?;
-                // if bytes_read == 0 {
-                //     break;
-                // }
-                // println!("read {bytes_read} bytes");
-                // let s: String = buf[0..bytes_read]
-                //     .into_iter()
-                //     .map(|byte| *byte as char)
-                //     .collect();
-                // let match_opt = |data: &RESPData<'_>| match data {
-                //     RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
-                //     _ => None,
-                // };
-                // let data = RESPData::try_from(s.as_str())?;
-                // println!("Parsed: {data}");
-                // let commands: Vec<RESPCommand> = match data {
-                //     RESPData::BulkStr(s) | RESPData::Str(s) => vec![RESPCommand::from_str(s)]
-                //         .into_iter()
-                //         .filter_map(|r| r.ok())
-                //         .collect(),
-                //     RESPData::Arr(elts) => elts.iter().filter_map(|x| match_opt(x)).collect(),
-                // };
-                // for command in commands {
-                //     _stream.write_all(command.to_string().as_bytes())?;
-                // }
-                // let command = RESPCommand::try_from(&buf[..bytes_read])?;
-                // _stream.write(command.to_string().as_bytes())?;
-                // _stream.write_all("PONG".as_bytes())?;
             }
             Err(e) => {
                 println!("error: {}", e);
