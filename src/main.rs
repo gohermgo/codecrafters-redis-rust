@@ -85,10 +85,10 @@ fn main() -> io::Result<()> {
         match stream {
             Ok(mut _stream) => {
                 println!("accepted new connection");
-                let mut command_buffer = Vec::with_capacity(128);
-                let bytes_read = _stream.read(&mut command_buffer)?;
+                let mut buf = [0; 1024];
+                let bytes_read = _stream.read(&mut buf)?;
                 println!("read {bytes_read} bytes");
-                let command = RESPCommand::try_from(command_buffer)?;
+                let command = RESPCommand::try_from(&buf[..bytes_read])?;
                 _stream.write(command.to_string().as_bytes())?;
             }
             Err(e) => {
