@@ -32,11 +32,11 @@ impl<'a> TryFrom<&'a str> for RESPData<'a> {
                     let count: usize = count.parse().map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidData, "Failed to parse array-count")
                     })?;
-                    let mut buf = Vec::with_capacity(count);
+                    let mut buf = vec![];
                     for _ in 0..count {
                         let (segment, remainder) = RESPData::chainparse(tl)?;
                         tl = remainder.unwrap_or_default();
-                        buf[count] = segment;
+                        buf.push(segment);
                     }
                     Ok(Self::Arr(buf))
                 }
