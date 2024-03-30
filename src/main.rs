@@ -125,7 +125,7 @@ impl fmt::Display for RESPCommand<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RESPCommand::Ping(Some(_payload)) => todo!(),
-            RESPCommand::Ping(None) => f.write_str(RESPData::Str("pong").to_string().as_str()),
+            RESPCommand::Ping(None) => f.write_str(RESPData::Str("PONG").to_string().as_str()),
         }
     }
 }
