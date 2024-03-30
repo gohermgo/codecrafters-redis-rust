@@ -24,7 +24,7 @@ pub enum RESPCommand<'a> {
 impl<'a> FromStr for RESPCommand<'a> {
     type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        println!("Trying RESPCommand from {s}");
+        println!("RESPCommand FromStr {s}");
         if s.is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Payload empty"));
         };
@@ -39,6 +39,7 @@ impl<'a> FromStr for RESPCommand<'a> {
 impl<'a> TryFrom<&[u8]> for RESPCommand<'a> {
     type Error = io::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        println!("RESPCommand TryFrom<&[u8]> {value:?}");
         RESPCommand::from_str(&*value.iter().map(|byte| *byte as char).collect::<String>())
     }
 }
