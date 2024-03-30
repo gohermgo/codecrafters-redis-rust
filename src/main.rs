@@ -18,7 +18,13 @@ impl fmt::Display for RESPData<'_> {
             RESPData::BulkStr(elt) => {
                 f.write_fmt(format_args!("${}\r\n{}\r\n", elt.as_bytes().len(), elt))
             }
-            RESPData::Arr(_elts) => todo!(),
+            RESPData::Arr(_elts) => {
+                let mut args = format!("*{}", _elts.len());
+                for elt in _elts {
+                    args = format!("{}{}", args, elt);
+                }
+                f.write_str(args.as_str())
+            }
         }
     }
 }
