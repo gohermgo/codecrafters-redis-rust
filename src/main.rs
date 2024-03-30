@@ -1,13 +1,16 @@
 use std::{
+    collections::HashMap,
     fmt,
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     str::FromStr,
+    sync::{Arc, RwLock},
 };
 
 pub enum RESPData<'a> {
     Str(&'a str),
     BulkStr(&'a str),
+    NullBulkStr,
     Arr(Vec<RESPData<'a>>),
 }
 
@@ -18,6 +21,7 @@ impl fmt::Display for RESPData<'_> {
             RESPData::BulkStr(elt) => {
                 f.write_fmt(format_args!("${}\r\n{}\r\n", elt.as_bytes().len(), elt))
             }
+            RESPData::NullBulkStr => f.write_str("$-1\r\n"),
             RESPData::Arr(_elts) => {
                 let mut args = format!("*{}\r\n", _elts.len());
                 for elt in _elts {
@@ -85,11 +89,19 @@ impl<'a> RESPData<'a> {
             None => Ok((segment, None)),
         }
     }
+    fn try_extract(&self) -> Option<&'a str> {
+        match self {
+            Self::Str(s) | Self::BulkStr(s) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 pub enum RESPCommand<'a> {
     Ping(Option<&'a str>),
     Echo(&'a str),
+    Set,
+    Get(Option<String>),
 }
 
 impl<'a> FromStr for RESPCommand<'a> {
@@ -127,6 +139,11 @@ impl fmt::Display for RESPCommand<'_> {
             RESPCommand::Ping(Some(_payload)) => todo!(),
             RESPCommand::Ping(None) => f.write_str(RESPData::Str("PONG").to_string().as_str()),
             RESPCommand::Echo(s) => f.write_str(RESPData::BulkStr(s).to_string().as_str()),
+            RESPCommand::Set => f.write_str(RESPData::Str("OK").to_string().as_str()),
+            RESPCommand::Get(Some(s)) => {
+                f.write_str(RESPData::BulkStr(s.as_str()).to_string().as_str())
+            }
+            RESPCommand::Get(None) => f.write_str(RESPData::NullBulkStr.to_string().as_str()),
         }
     }
 }
@@ -146,7 +163,10 @@ impl<'a> RESPCommand<'a> {
     }
 }
 
-fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
+fn handle_incoming(
+    mut stream: TcpStream,
+    db_arc: Arc<RwLock<HashMap<String, String>>>,
+) -> io::Result<()> {
     loop {
         println!("accepted new connection");
         let mut buf = [0; 1024];
@@ -163,9 +183,11 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
         //     RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
         //     _ => None,
         // };
-        let data = RESPData::try_from(s.as_str())?;
+        let s_s = s.as_str();
+        let data = RESPData::try_from(s_s)?;
         println!("Parsed: {data}");
         let commands: Vec<RESPCommand> = match data {
+            RESPData::NullBulkStr => vec![],
             RESPData::BulkStr(s) | RESPData::Str(s) => vec![RESPCommand::from_str(s)]
                 .into_iter()
                 .filter_map(|r| r.ok())
@@ -186,30 +208,45 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
                                     _ => None,
                                 })
                                 .flatten(),
-                            &"PING" | &"ping" => Some(RESPCommand::Ping(
-                                elt_iter
-                                    .next()
-                                    .map(|elt| match elt {
-                                        RESPData::Str(to_ping) | RESPData::BulkStr(to_ping) => {
-                                            Some(*to_ping)
+                            &"PING" | &"ping" => Some(RESPCommand::Ping(elt_iter.next().and_then(
+                                |elt| match elt {
+                                    RESPData::Str(to_ping) | RESPData::BulkStr(to_ping) => {
+                                        Some(*to_ping)
+                                    }
+                                    _ => None,
+                                },
+                            ))),
+                            &"SET" | &"set" => {
+                                elt_iter.next().and_then(|k| {
+                                    match (
+                                        k.try_extract(),
+                                        elt_iter.next().and_then(RESPData::try_extract),
+                                    ) {
+                                        (Some(k), Some(v)) => {
+                                            let mut rw_guard = db_arc.write().unwrap();
+                                            rw_guard.insert(k.into(), v.into());
+                                            Some(RESPCommand::Set)
                                         }
                                         _ => None,
-                                    })
-                                    .flatten(),
-                            )),
-                            // Ok(RESPCommand::Echo(mut to_echo)) => {
-                            //     println!("Replacing {to_echo}");
-                            //     to_echo = match elt_iter.next() {
-                            //         Some(RESPData::Str(s) | RESPData::BulkStr(s)) => *s,
-                            //         _ => to_echo,
-                            //     };
-                            //     println!("with {to_echo}");
-                            //     Some(RESPCommand::Echo(to_echo))
-                            // }
-                            // Ok(command) => {
-                            //     println!("Pushing {command}");
-                            //     Some(command)
-                            // }
+                                    }
+                                })
+                                // if let Some(x) = elt_iter.next().map(|k| (match k {
+                                //     RESPData::Str(s) | RESPData::BulkStr(s) => Some(*s),
+                                //     _ => None
+                                //     }, elt_iter.next().map(|v| match v {
+                                //     RESPData::Str(s) | RESPData::BulkStr(s) => Some(*s),
+                                //     _ => None
+                                // })) {
+                                //     todo!()
+                                // };
+                            }
+                            &"GET" | &"get" => elt_iter
+                                .next()
+                                .and_then(RESPData::try_extract)
+                                .and_then(|k| {
+                                    let guard = db_arc.read().unwrap();
+                                    Some(RESPCommand::Get(guard.get(k.into()).cloned()))
+                                }),
                             _ => None,
                         },
                         _ => todo!(),
@@ -234,10 +271,15 @@ fn main() -> io::Result<()> {
 
     let listener = TcpListener::bind("127.0.0.1:6379")?;
 
+    let db = HashMap::new();
+    let safe_db = RwLock::new(db);
+    let thsafe_db = Arc::new(safe_db);
+
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                std::thread::spawn(|| handle_incoming(_stream));
+                let db_arc = thsafe_db.clone();
+                std::thread::spawn(|| handle_incoming(_stream, db_arc));
             }
             Err(e) => {
                 println!("error: {}", e);
