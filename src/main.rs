@@ -7,14 +7,76 @@ use std::{
 
 pub enum RESPData<'a> {
     Str(&'a str),
-    Arr(&'a RESPData<'a>),
+    BulkStr(&'a str),
+    Arr(Vec<RESPData<'a>>),
 }
 
 impl fmt::Display for RESPData<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RESPData::Str(payload) => f.write_fmt(format_args!("+{}\r\n", payload)),
+            RESPData::BulkStr(elt) => {
+                f.write_fmt(format_args!("${}\r\n{}\r\n", elt.as_bytes().len(), elt))
+            }
             RESPData::Arr(_elts) => todo!(),
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a str> for RESPData<'a> {
+    type Error = io::Error;
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        match value.split_once("\r\n") {
+            Some((hd, mut tl)) => match hd.split_at(1) {
+                ("*", count) => {
+                    let count: usize = count.parse().map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "Failed to parse array-count")
+                    })?;
+                    let mut buf = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        let (segment, remainder) = RESPData::chainparse(tl)?;
+                        tl = remainder.unwrap_or_default();
+                        buf[count] = segment;
+                    }
+                    Ok(Self::Arr(buf))
+                }
+                ("$", len) => {
+                    let len: usize = len.parse().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Failed to parse bulk-string length",
+                        )
+                    })?;
+                    Ok(Self::BulkStr(tl.get(0..len).unwrap_or_default()))
+                }
+                _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown")),
+            },
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Missing delimiter",
+            )),
+        }
+    }
+}
+
+// impl<'a> TryFrom<&'a [u8]> for RESPData<'a> {
+//     type Error = io::Error;
+//     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+//         RESPData::try_from(
+//             &*value
+//                 .into_iter()
+//                 .map(|byte| *byte as char)
+//                 .collect::<String>(),
+//         )
+//     }
+// }
+
+impl<'a> RESPData<'a> {
+    fn chainparse(s: &'a str) -> io::Result<(Self, Option<&str>)> {
+        let segment = Self::try_from(s)?;
+        match s.split_once(segment.to_string().as_str()) {
+            Some((_, tl)) => Ok((segment, Some(tl))),
+            None => Ok((segment, None)),
         }
     }
 }
@@ -90,6 +152,12 @@ fn main() -> io::Result<()> {
                 let mut buf = [0; 1024];
                 let bytes_read = _stream.read(&mut buf)?;
                 println!("read {bytes_read} bytes");
+                let s: String = buf[0..bytes_read]
+                    .into_iter()
+                    .map(|byte| *byte as char)
+                    .collect();
+                let _data = RESPData::try_from(s.as_str())?;
+
                 // let command = RESPCommand::try_from(&buf[..bytes_read])?;
                 // _stream.write(command.to_string().as_bytes())?;
                 _stream.write_all("PONG".as_bytes())?;
