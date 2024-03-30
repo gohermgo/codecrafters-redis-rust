@@ -176,20 +176,40 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
                 let mut elt_iter = elts.iter();
                 while let Some(elt) = elt_iter.next() {
                     let command_opt = match elt {
-                        RESPData::Str(s) | RESPData::BulkStr(s) => match RESPCommand::from_str(s) {
-                            Ok(RESPCommand::Echo(mut to_echo)) => {
-                                println!("Replacing {to_echo}");
-                                to_echo = match elt_iter.next() {
-                                    Some(RESPData::Str(s) | RESPData::BulkStr(s)) => *s,
-                                    _ => to_echo,
-                                };
-                                println!("with {to_echo}");
-                                Some(RESPCommand::Echo(to_echo))
-                            }
-                            Ok(command) => {
-                                println!("Pushing {command}");
-                                Some(command)
-                            }
+                        RESPData::Str(s) | RESPData::BulkStr(s) => match s {
+                            &"ECHO" | &"echo" => elt_iter
+                                .next()
+                                .map(|payload| match payload {
+                                    RESPData::Str(to_echo) | RESPData::BulkStr(to_echo) => {
+                                        Some(RESPCommand::Echo(&to_echo))
+                                    }
+                                    _ => None,
+                                })
+                                .flatten(),
+                            &"PING" | &"ping" => Some(RESPCommand::Ping(
+                                elt_iter
+                                    .next()
+                                    .map(|elt| match elt {
+                                        RESPData::Str(to_ping) | RESPData::BulkStr(to_ping) => {
+                                            Some(*to_ping)
+                                        }
+                                        _ => None,
+                                    })
+                                    .flatten(),
+                            )),
+                            // Ok(RESPCommand::Echo(mut to_echo)) => {
+                            //     println!("Replacing {to_echo}");
+                            //     to_echo = match elt_iter.next() {
+                            //         Some(RESPData::Str(s) | RESPData::BulkStr(s)) => *s,
+                            //         _ => to_echo,
+                            //     };
+                            //     println!("with {to_echo}");
+                            //     Some(RESPCommand::Echo(to_echo))
+                            // }
+                            // Ok(command) => {
+                            //     println!("Pushing {command}");
+                            //     Some(command)
+                            // }
                             _ => None,
                         },
                         _ => todo!(),
