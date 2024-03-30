@@ -162,11 +162,25 @@ fn main() -> io::Result<()> {
                     .into_iter()
                     .map(|byte| *byte as char)
                     .collect();
-                let _data = RESPData::try_from(s.as_str())?;
-                println!("Parsed: {_data}");
+                let match_opt = |data: &RESPData<'_>| match data {
+                    RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
+                    _ => None,
+                };
+                let data = RESPData::try_from(s.as_str())?;
+                println!("Parsed: {data}");
+                let commands: Vec<RESPCommand> = match data {
+                    RESPData::BulkStr(s) | RESPData::Str(s) => vec![RESPCommand::from_str(s)]
+                        .into_iter()
+                        .filter_map(|r| r.ok())
+                        .collect(),
+                    RESPData::Arr(elts) => elts.iter().filter_map(|x| match_opt(x)).collect(),
+                };
+                for command in commands {
+                    _stream.write_all(command.to_string().as_bytes())?;
+                }
                 // let command = RESPCommand::try_from(&buf[..bytes_read])?;
                 // _stream.write(command.to_string().as_bytes())?;
-                _stream.write_all("PONG".as_bytes())?;
+                // _stream.write_all("PONG".as_bytes())?;
             }
             Err(e) => {
                 println!("error: {}", e);
