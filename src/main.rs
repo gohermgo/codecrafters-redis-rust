@@ -159,10 +159,10 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
             .into_iter()
             .map(|byte| *byte as char)
             .collect();
-        let match_opt = |data: &RESPData<'_>| match data {
-            RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
-            _ => None,
-        };
+        // let match_opt = |data: &RESPData<'_>| match data {
+        //     RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
+        //     _ => None,
+        // };
         let data = RESPData::try_from(s.as_str())?;
         println!("Parsed: {data}");
         let commands: Vec<RESPCommand> = match data {
@@ -170,7 +170,28 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
                 .into_iter()
                 .filter_map(|r| r.ok())
                 .collect(),
-            RESPData::Arr(elts) => elts.iter().filter_map(|x| match_opt(x)).collect(),
+            RESPData::Arr(elts) => {
+                let mut commands = vec![];
+                let mut elt_iter = elts.iter();
+                while let Some(elt) = elt_iter.next() {
+                    let command = match elt {
+                        RESPData::Str(s) | RESPData::BulkStr(s) => match RESPCommand::from_str(s) {
+                            Ok(RESPCommand::Echo(mut to_echo)) => {
+                                to_echo = match elt_iter.next() {
+                                    Some(RESPData::Str(s) | RESPData::BulkStr(s)) => *s,
+                                    _ => to_echo,
+                                };
+                                RESPCommand::Echo(to_echo)
+                            }
+                            Ok(command) => command,
+                            _ => todo!(),
+                        },
+                        _ => todo!(),
+                    };
+                    commands.push(command);
+                }
+                commands
+            }
         };
         for command in commands {
             stream.write_all(command.to_string().as_bytes())?;
