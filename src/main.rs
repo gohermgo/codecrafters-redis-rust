@@ -2,7 +2,7 @@ use std::{
     fmt,
     io::{self, Read, Write},
     net::TcpListener,
-    str::{FromStr, SplitWhitespace},
+    str::FromStr,
 };
 
 pub enum RESPData<'a> {
@@ -24,6 +24,7 @@ pub enum RESPCommand<'a> {
 impl<'a> FromStr for RESPCommand<'a> {
     type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        println!("Trying RESPCommand from {s}");
         if s.is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Payload empty"));
         };
@@ -52,7 +53,7 @@ impl<'a> TryFrom<Vec<u8>> for RESPCommand<'a> {
 impl fmt::Display for RESPCommand<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RESPCommand::Ping(Some(payload)) => todo!(),
+            RESPCommand::Ping(Some(_payload)) => todo!(),
             RESPCommand::Ping(None) => f.write_str("PONG"),
         }
     }
@@ -60,8 +61,8 @@ impl fmt::Display for RESPCommand<'_> {
 
 impl<'a> RESPCommand<'a> {
     fn match_command_with_payload<'b>(
-        command: &'b str,
-        payload: &'b str,
+        _command: &'b str,
+        _payload: &'b str,
     ) -> Result<Self, io::Error> {
         todo!()
     }
