@@ -171,6 +171,7 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
                 .filter_map(|r| r.ok())
                 .collect(),
             RESPData::Arr(elts) => {
+                println!("Parsing array");
                 let mut commands = vec![];
                 let mut elt_iter = elts.iter();
                 while let Some(elt) = elt_iter.next() {
@@ -185,7 +186,10 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
                                 println!("with {to_echo}");
                                 Some(RESPCommand::Echo(to_echo))
                             }
-                            Ok(command) => Some(command),
+                            Ok(command) => {
+                                println!("Pushing {command}");
+                                Some(command)
+                            }
                             _ => None,
                         },
                         _ => todo!(),
