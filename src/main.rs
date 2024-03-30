@@ -7,12 +7,14 @@ use std::{
 
 pub enum RESPData<'a> {
     Str(&'a str),
+    Arr(&'a RESPData<'a>),
 }
 
 impl fmt::Display for RESPData<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RESPData::Str(payload) => f.write_fmt(format_args!("+{}\r\n", payload)),
+            RESPData::Arr(_elts) => todo!(),
         }
     }
 }
@@ -88,8 +90,9 @@ fn main() -> io::Result<()> {
                 let mut buf = [0; 1024];
                 let bytes_read = _stream.read(&mut buf)?;
                 println!("read {bytes_read} bytes");
-                let command = RESPCommand::try_from(&buf[..bytes_read])?;
-                _stream.write(command.to_string().as_bytes())?;
+                // let command = RESPCommand::try_from(&buf[..bytes_read])?;
+                // _stream.write(command.to_string().as_bytes())?;
+                _stream.write_all("PONG".as_bytes())?;
             }
             Err(e) => {
                 println!("error: {}", e);
