@@ -86,7 +86,7 @@ fn main() -> io::Result<()> {
             Ok(mut _stream) => {
                 println!("accepted new connection");
                 let mut command_buffer = vec![];
-                let bytes_read = _stream.read(&mut command_buffer)?;
+                let bytes_read = _stream.read_to_end(&mut command_buffer)?;
                 println!("read {bytes_read} bytes");
                 let command = RESPCommand::try_from(command_buffer)?;
                 _stream.write(command.to_string().as_bytes())?;
