@@ -157,7 +157,7 @@ fn main() -> io::Result<()> {
                     .map(|byte| *byte as char)
                     .collect();
                 let _data = RESPData::try_from(s.as_str())?;
-
+                println!("Parsed: {_data}");
                 // let command = RESPCommand::try_from(&buf[..bytes_read])?;
                 // _stream.write(command.to_string().as_bytes())?;
                 _stream.write_all("PONG".as_bytes())?;
