@@ -69,7 +69,7 @@ impl<'a> RESPCommand<'a> {
     }
     fn match_command(command: &str) -> Result<RESPCommand<'a>, io::Error> {
         match command {
-            "PING" => Ok(RESPCommand::Ping(None)),
+            "PING" | "ping" => Ok(RESPCommand::Ping(None)),
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, command)),
         }
     }
@@ -86,7 +86,8 @@ fn main() -> io::Result<()> {
             Ok(mut _stream) => {
                 println!("accepted new connection");
                 let mut command_buffer = vec![];
-                _stream.read(&mut command_buffer)?;
+                let bytes_read = _stream.read(&mut command_buffer)?;
+                println!("read {bytes_read} bytes");
                 let command = RESPCommand::try_from(command_buffer)?;
                 _stream.write(command.to_string().as_bytes())?;
             }
