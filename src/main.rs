@@ -1,7 +1,7 @@
 use std::{
     fmt,
     io::{self, Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     str::FromStr,
 };
 
@@ -144,6 +144,39 @@ impl<'a> RESPCommand<'a> {
     }
 }
 
+async fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
+    loop {
+        println!("accepted new connection");
+        let mut buf = [0; 1024];
+        let bytes_read = stream.read(&mut buf)?;
+        if bytes_read == 0 {
+            break;
+        }
+        println!("read {bytes_read} bytes");
+        let s: String = buf[0..bytes_read]
+            .into_iter()
+            .map(|byte| *byte as char)
+            .collect();
+        let match_opt = |data: &RESPData<'_>| match data {
+            RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
+            _ => None,
+        };
+        let data = RESPData::try_from(s.as_str())?;
+        println!("Parsed: {data}");
+        let commands: Vec<RESPCommand> = match data {
+            RESPData::BulkStr(s) | RESPData::Str(s) => vec![RESPCommand::from_str(s)]
+                .into_iter()
+                .filter_map(|r| r.ok())
+                .collect(),
+            RESPData::Arr(elts) => elts.iter().filter_map(|x| match_opt(x)).collect(),
+        };
+        for command in commands {
+            stream.write_all(command.to_string().as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     // println!("Logs from your program will appear here!");
@@ -152,38 +185,39 @@ fn main() -> io::Result<()> {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(mut _stream) => loop {
-                println!("accepted new connection");
-                let mut buf = [0; 1024];
-                let bytes_read = _stream.read(&mut buf)?;
-                if bytes_read == 0 {
-                    break;
-                }
-                println!("read {bytes_read} bytes");
-                let s: String = buf[0..bytes_read]
-                    .into_iter()
-                    .map(|byte| *byte as char)
-                    .collect();
-                let match_opt = |data: &RESPData<'_>| match data {
-                    RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
-                    _ => None,
-                };
-                let data = RESPData::try_from(s.as_str())?;
-                println!("Parsed: {data}");
-                let commands: Vec<RESPCommand> = match data {
-                    RESPData::BulkStr(s) | RESPData::Str(s) => vec![RESPCommand::from_str(s)]
-                        .into_iter()
-                        .filter_map(|r| r.ok())
-                        .collect(),
-                    RESPData::Arr(elts) => elts.iter().filter_map(|x| match_opt(x)).collect(),
-                };
-                for command in commands {
-                    _stream.write_all(command.to_string().as_bytes())?;
-                }
+            Ok(mut _stream) => {
+                let fut = handle_incoming(_stream);
+                // println!("accepted new connection");
+                // let mut buf = [0; 1024];
+                // let bytes_read = _stream.read(&mut buf)?;
+                // if bytes_read == 0 {
+                //     break;
+                // }
+                // println!("read {bytes_read} bytes");
+                // let s: String = buf[0..bytes_read]
+                //     .into_iter()
+                //     .map(|byte| *byte as char)
+                //     .collect();
+                // let match_opt = |data: &RESPData<'_>| match data {
+                //     RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
+                //     _ => None,
+                // };
+                // let data = RESPData::try_from(s.as_str())?;
+                // println!("Parsed: {data}");
+                // let commands: Vec<RESPCommand> = match data {
+                //     RESPData::BulkStr(s) | RESPData::Str(s) => vec![RESPCommand::from_str(s)]
+                //         .into_iter()
+                //         .filter_map(|r| r.ok())
+                //         .collect(),
+                //     RESPData::Arr(elts) => elts.iter().filter_map(|x| match_opt(x)).collect(),
+                // };
+                // for command in commands {
+                //     _stream.write_all(command.to_string().as_bytes())?;
+                // }
                 // let command = RESPCommand::try_from(&buf[..bytes_read])?;
                 // _stream.write(command.to_string().as_bytes())?;
                 // _stream.write_all("PONG".as_bytes())?;
-            },
+            }
             Err(e) => {
                 println!("error: {}", e);
             }
