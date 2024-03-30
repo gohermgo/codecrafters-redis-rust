@@ -19,7 +19,7 @@ impl fmt::Display for RESPData<'_> {
                 f.write_fmt(format_args!("${}\r\n{}\r\n", elt.as_bytes().len(), elt))
             }
             RESPData::Arr(_elts) => {
-                let mut args = format!("*{}", _elts.len());
+                let mut args = format!("*{}\r\n", _elts.len());
                 for elt in _elts {
                     args = format!("{}{}", args, elt);
                 }
