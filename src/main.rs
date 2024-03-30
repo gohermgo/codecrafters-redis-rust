@@ -174,21 +174,23 @@ fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
                 let mut commands = vec![];
                 let mut elt_iter = elts.iter();
                 while let Some(elt) = elt_iter.next() {
-                    let command = match elt {
+                    let command_opt = match elt {
                         RESPData::Str(s) | RESPData::BulkStr(s) => match RESPCommand::from_str(s) {
                             Ok(RESPCommand::Echo(mut to_echo)) => {
                                 to_echo = match elt_iter.next() {
                                     Some(RESPData::Str(s) | RESPData::BulkStr(s)) => *s,
                                     _ => to_echo,
                                 };
-                                RESPCommand::Echo(to_echo)
+                                Some(RESPCommand::Echo(to_echo))
                             }
-                            Ok(command) => command,
-                            _ => todo!(),
+                            Ok(command) => Some(command),
+                            _ => None,
                         },
                         _ => todo!(),
                     };
-                    commands.push(command);
+                    if let Some(command) = command_opt {
+                        commands.push(command);
+                    };
                 }
                 commands
             }
