@@ -144,7 +144,7 @@ impl<'a> RESPCommand<'a> {
     }
 }
 
-async fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
+fn handle_incoming(mut stream: TcpStream) -> io::Result<()> {
     loop {
         println!("accepted new connection");
         let mut buf = [0; 1024];
@@ -186,7 +186,13 @@ fn main() -> io::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                let fut = handle_incoming(_stream);
+                std::thread::spawn(|| handle_incoming(_stream));
+                // std::future::poll_fn()
+                // let mut fut = handle_incoming(_stream);
+                // let poll = std::task::Poll::from(fut);
+                // let x = std::future::poll_fn(|x| poll);
+                // let val = std::task::ready!(poll);
+                // std::future::poll_fn(|x| handle_incoming(_stream));
                 // println!("accepted new connection");
                 // let mut buf = [0; 1024];
                 // let bytes_read = _stream.read(&mut buf)?;
