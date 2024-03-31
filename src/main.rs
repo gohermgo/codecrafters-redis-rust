@@ -11,7 +11,7 @@ use std::{
         // Mutex,
         RwLock,
     },
-    // thread::JoinHandle,
+    time::{Duration, Instant}, // thread::JoinHandle,
 };
 
 #[derive(Debug)]
@@ -142,7 +142,7 @@ impl<'a> DataType<'a> {
 pub enum RESPCommand<'a> {
     Ping(Option<&'a str>),
     Echo(&'a str),
-    Set,
+    Set(Instant, Option<Duration>),
     Get(Option<String>),
 }
 
@@ -182,7 +182,11 @@ impl fmt::Display for RESPCommand<'_> {
             Ping(Some(_payload)) => todo!(),
             Ping(None) => DataType::SimpleString("PONG"),
             Echo(s) => DataType::BulkString(Some(s)),
-            Set => DataType::SimpleString("OK"),
+            Set(start, timeout_opt) => match timeout_opt {
+                None => DataType::SimpleString("OK"),
+                Some(timeout) if start.elapsed() < *timeout => DataType::SimpleString("OK"),
+                _ => DataType::BulkString(None),
+            },
             Get(Some(s)) => DataType::BulkString(Some(s.as_str())),
             Get(None) => DataType::BulkString(None),
         };
@@ -330,7 +334,24 @@ fn handle_incoming(
                                         (Some(k), Some(v)) => {
                                             let mut rw_guard = db_arc.write().unwrap();
                                             rw_guard.insert(k.into(), v.into());
-                                            Some(RESPCommand::Set)
+                                            Some(RESPCommand::Set(
+                                                Instant::now(),
+                                                elt_iter.next().and_then(|elt| match elt {
+                                                    DataType::BulkString(Some("px")) => {
+                                                        elt_iter.next().and_then(|elt| match elt {
+                                                            DataType::BulkString(Some(timeout)) => {
+                                                                timeout.parse().ok().map(
+                                                                    |timeout| {
+                                                                        Duration::from_secs(timeout)
+                                                                    },
+                                                                )
+                                                            }
+                                                            _ => None,
+                                                        })
+                                                    }
+                                                    _ => None,
+                                                }),
+                                            ))
                                         }
                                         _ => None,
                                     }
