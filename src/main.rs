@@ -273,13 +273,11 @@ impl<'a> RESPCommand<'a> {
     }
 }
 
-type Timer = (Instant, Duration);
-type DBValue = (String, Option<Timer>);
-
-fn handle_incoming(
-    mut stream: TcpStream,
-    db_arc: Arc<RwLock<HashMap<String, DBValue>>>,
-) -> io::Result<()> {
+type OptionalTimer = Option<(Instant, Duration)>;
+type DataMapValue = (String, OptionalTimer);
+type DataMap = HashMap<String, DataMapValue>;
+type ThreadSafeDataMap = Arc<RwLock<DataMap>>;
+fn handle_incoming(mut stream: TcpStream, db_arc: ThreadSafeDataMap) -> io::Result<()> {
     loop {
         println!("accepted new connection");
         let mut buf = [0; 1024];
