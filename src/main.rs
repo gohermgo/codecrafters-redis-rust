@@ -14,6 +14,7 @@ use std::{
     // thread::JoinHandle,
 };
 
+#[derive(Debug)]
 pub enum DataType<'a> {
     SimpleString(&'a str),
     BulkString(Option<&'a str>),
