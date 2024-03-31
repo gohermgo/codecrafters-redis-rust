@@ -3,39 +3,42 @@ use std::{
     fmt,
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
+    num::ParseIntError,
     str::FromStr,
     sync::{Arc, RwLock},
 };
 
-pub enum RESPData<'a> {
-    Str(&'a str),
-    BulkStr(&'a str),
-    NullBulkStr,
-    Arr(Vec<RESPData<'a>>),
+pub enum DataType<'a> {
+    SimpleString(&'a str),
+    BulkString(&'a str),
+    NullBulkString,
+    Array(Vec<DataType<'a>>),
 }
 
-impl fmt::Display for RESPData<'_> {
+impl fmt::Display for DataType<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use DataType::*;
         match self {
-            RESPData::Str(payload) => f.write_fmt(format_args!("+{}\r\n", payload)),
-            RESPData::BulkStr(elt) => {
+            SimpleString(payload) => f.write_fmt(format_args!("+{}\r\n", payload)),
+            BulkString(elt) => {
                 f.write_fmt(format_args!("${}\r\n{}\r\n", elt.as_bytes().len(), elt))
             }
-            RESPData::NullBulkStr => f.write_str("$-1\r\n"),
-            RESPData::Arr(_elts) => {
-                let mut args = format!("*{}\r\n", _elts.len());
-                for elt in _elts {
-                    args = format!("{}{}", args, elt);
-                }
-                f.write_str(args.as_str())
-            }
+            NullBulkString => f.write_str("$-1\r\n"),
+            Array(elts) => f.write_str(
+                elts.iter()
+                    .fold(format!("*{}\r\n", elts.len()), |acc, elt| {
+                        format!("{}{}", acc, elt)
+                    })
+                    .as_str(),
+            ),
         }
     }
 }
 
-impl<'a> TryFrom<&'a str> for RESPData<'a> {
+impl<'a> TryFrom<&'a str> for DataType<'a> {
     type Error = io::Error;
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        use DataType::*;
         match value.split_once("\r\n") {
             Some((hd, mut tl)) => match hd.split_at(1) {
                 ("*", count) => {
@@ -44,20 +47,47 @@ impl<'a> TryFrom<&'a str> for RESPData<'a> {
                     })?;
                     let mut buf = vec![];
                     for _ in 0..count {
-                        let (segment, remainder) = RESPData::chainparse(tl)?;
+                        let (segment, remainder) = DataType::chainparse(tl)?;
                         tl = remainder.unwrap_or_default();
                         buf.push(segment);
                     }
-                    Ok(Self::Arr(buf))
+                    Ok(Self::Array(buf))
                 }
                 ("$", len) => {
-                    let len: usize = len.parse().map_err(|_| {
+                    let into_io_error = |e: ParseIntError| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "Failed to parse bulk-string length",
+                            format!("Failed to parse bulk-string length {len} ({:?})", e.kind()),
                         )
-                    })?;
-                    Ok(Self::BulkStr(tl.get(0..len).unwrap_or_default()))
+                    };
+                    let length_error = |data_type: &str| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Invalid length {len} for {data_type} {tl}"),
+                        )
+                    };
+                    let try_into_bulk_string = |len: usize| match tl.get(0..len) {
+                        Some(content) => Ok(BulkString(content)),
+                        None => Err(length_error("bulk-string")),
+                    };
+                    let try_into_null_bulk_string = |len: isize| match len {
+                        -1 => Ok(NullBulkString),
+                        _ => Err(length_error("presumed null bulk-string")),
+                    };
+                    len.parse()
+                        .map_err(into_io_error)
+                        .and_then(try_into_bulk_string)
+                        .or(len
+                            .parse()
+                            .map_err(into_io_error)
+                            .and_then(try_into_null_bulk_string))
+                    // let len: usize = len.parse().map_err(|_| {
+                    //     io::Error::new(
+                    //         io::ErrorKind::InvalidData,
+                    //         "Failed to parse bulk-string length",
+                    //     )
+                    // })?;
+                    // Ok(Self::BulkString(tl.get(0..len).unwrap_or_default()))
                 }
                 _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown")),
             },
@@ -81,7 +111,7 @@ impl<'a> TryFrom<&'a str> for RESPData<'a> {
 //     }
 // }
 
-impl<'a> RESPData<'a> {
+impl<'a> DataType<'a> {
     fn chainparse(s: &'a str) -> io::Result<(Self, Option<&str>)> {
         let segment = Self::try_from(s)?;
         match s.split_once(segment.to_string().as_str()) {
@@ -91,7 +121,7 @@ impl<'a> RESPData<'a> {
     }
     fn try_extract(&self) -> Option<&'a str> {
         match self {
-            Self::Str(s) | Self::BulkStr(s) => Some(s),
+            Self::SimpleString(s) | Self::BulkString(s) => Some(s),
             _ => None,
         }
     }
@@ -137,13 +167,15 @@ impl fmt::Display for RESPCommand<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RESPCommand::Ping(Some(_payload)) => todo!(),
-            RESPCommand::Ping(None) => f.write_str(RESPData::Str("PONG").to_string().as_str()),
-            RESPCommand::Echo(s) => f.write_str(RESPData::BulkStr(s).to_string().as_str()),
-            RESPCommand::Set => f.write_str(RESPData::Str("OK").to_string().as_str()),
-            RESPCommand::Get(Some(s)) => {
-                f.write_str(RESPData::BulkStr(s.as_str()).to_string().as_str())
+            RESPCommand::Ping(None) => {
+                f.write_str(DataType::SimpleString("PONG").to_string().as_str())
             }
-            RESPCommand::Get(None) => f.write_str(RESPData::NullBulkStr.to_string().as_str()),
+            RESPCommand::Echo(s) => f.write_str(DataType::BulkString(s).to_string().as_str()),
+            RESPCommand::Set => f.write_str(DataType::SimpleString("OK").to_string().as_str()),
+            RESPCommand::Get(Some(s)) => {
+                f.write_str(DataType::BulkString(s.as_str()).to_string().as_str())
+            }
+            RESPCommand::Get(None) => f.write_str(DataType::NullBulkString.to_string().as_str()),
         }
     }
 }
@@ -184,25 +216,26 @@ fn handle_incoming(
         //     _ => None,
         // };
         let s_s = s.as_str();
-        let data = RESPData::try_from(s_s)?;
+        let data = DataType::try_from(s_s)?;
         println!("Parsed: {data}");
         let commands: Vec<RESPCommand> = match data {
-            RESPData::NullBulkStr => vec![],
-            RESPData::BulkStr(s) | RESPData::Str(s) => vec![RESPCommand::from_str(s)]
+            DataType::NullBulkString => vec![],
+            DataType::BulkString(s) | DataType::SimpleString(s) => vec![RESPCommand::from_str(s)]
                 .into_iter()
                 .filter_map(|r| r.ok())
                 .collect(),
-            RESPData::Arr(elts) => {
+            DataType::Array(elts) => {
                 println!("Parsing array");
                 let mut commands = vec![];
                 let mut elt_iter = elts.iter();
                 while let Some(elt) = elt_iter.next() {
                     let command_opt = match elt {
-                        RESPData::Str(s) | RESPData::BulkStr(s) => match s {
+                        DataType::SimpleString(s) | DataType::BulkString(s) => match s {
                             &"ECHO" | &"echo" => elt_iter
                                 .next()
                                 .map(|payload| match payload {
-                                    RESPData::Str(to_echo) | RESPData::BulkStr(to_echo) => {
+                                    DataType::SimpleString(to_echo)
+                                    | DataType::BulkString(to_echo) => {
                                         Some(RESPCommand::Echo(&to_echo))
                                     }
                                     _ => None,
@@ -210,9 +243,8 @@ fn handle_incoming(
                                 .flatten(),
                             &"PING" | &"ping" => Some(RESPCommand::Ping(elt_iter.next().and_then(
                                 |elt| match elt {
-                                    RESPData::Str(to_ping) | RESPData::BulkStr(to_ping) => {
-                                        Some(*to_ping)
-                                    }
+                                    DataType::SimpleString(to_ping)
+                                    | DataType::BulkString(to_ping) => Some(*to_ping),
                                     _ => None,
                                 },
                             ))),
@@ -220,7 +252,7 @@ fn handle_incoming(
                                 elt_iter.next().and_then(|k| {
                                     match (
                                         k.try_extract(),
-                                        elt_iter.next().and_then(RESPData::try_extract),
+                                        elt_iter.next().and_then(DataType::try_extract),
                                     ) {
                                         (Some(k), Some(v)) => {
                                             let mut rw_guard = db_arc.write().unwrap();
@@ -242,7 +274,7 @@ fn handle_incoming(
                             }
                             &"GET" | &"get" => elt_iter
                                 .next()
-                                .and_then(RESPData::try_extract)
+                                .and_then(DataType::try_extract)
                                 .and_then(|k| {
                                     let guard = db_arc.read().unwrap();
                                     Some(RESPCommand::Get(guard.get(k.into()).cloned()))
