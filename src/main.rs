@@ -142,7 +142,7 @@ impl<'a> DataType<'a> {
 pub enum RESPCommand<'a> {
     Ping(Option<&'a str>),
     Echo(&'a str),
-    Set(Instant, Option<Duration>),
+    Set,
     Get(Option<String>),
 }
 
@@ -182,11 +182,12 @@ impl fmt::Display for RESPCommand<'_> {
             Ping(Some(_payload)) => todo!(),
             Ping(None) => DataType::SimpleString("PONG"),
             Echo(s) => DataType::BulkString(Some(s)),
-            Set(start, timeout_opt) => match timeout_opt {
-                None => DataType::SimpleString("OK"),
-                Some(timeout) if start.elapsed() < *timeout => DataType::SimpleString("OK"),
-                _ => DataType::BulkString(None),
-            },
+            Set => DataType::SimpleString("OK"),
+            // Set(start, timeout_opt) => match timeout_opt {
+            //     None => DataType::SimpleString("OK"),
+            //     Some(timeout) if start.elapsed() < *timeout => DataType::SimpleString("OK"),
+            //     _ => DataType::BulkString(None),
+            // },
             Get(Some(s)) => DataType::BulkString(Some(s.as_str())),
             Get(None) => DataType::BulkString(None),
         };
@@ -272,9 +273,12 @@ impl<'a> RESPCommand<'a> {
     }
 }
 
+type Timer = (Instant, Duration);
+type DBValue = (String, Option<Timer>);
+
 fn handle_incoming(
     mut stream: TcpStream,
-    db_arc: Arc<RwLock<HashMap<String, String>>>,
+    db_arc: Arc<RwLock<HashMap<String, DBValue>>>,
 ) -> io::Result<()> {
     loop {
         println!("accepted new connection");
@@ -333,25 +337,20 @@ fn handle_incoming(
                                     ) {
                                         (Some(k), Some(v)) => {
                                             let mut rw_guard = db_arc.write().unwrap();
-                                            rw_guard.insert(k.into(), v.into());
-                                            Some(RESPCommand::Set(
-                                                Instant::now(),
-                                                elt_iter.next().and_then(|elt| match elt {
-                                                    DataType::BulkString(Some("px")) => {
-                                                        elt_iter.next().and_then(|elt| match elt {
-                                                            DataType::BulkString(Some(timeout)) => {
-                                                                timeout.parse().ok().map(
-                                                                    |timeout| {
-                                                                        Duration::from_secs(timeout)
-                                                                    },
-                                                                )
-                                                            }
-                                                            _ => None,
-                                                        })
-                                                    }
-                                                    _ => None,
-                                                }),
-                                            ))
+                                            let mut timer = None;
+                                            if let Some("px") =
+                                                elt_iter.next().and_then(DataType::try_extract)
+                                            {
+                                                timer = elt_iter
+                                                    .next()
+                                                    .and_then(DataType::try_extract)
+                                                    .and_then(|d| d.parse().ok())
+                                                    .map(|secs| {
+                                                        (Instant::now(), Duration::from_secs(secs))
+                                                    })
+                                            }
+                                            rw_guard.insert(k.into(), (v.into(), timer));
+                                            Some(RESPCommand::Set)
                                         }
                                         _ => None,
                                     }
@@ -369,7 +368,21 @@ fn handle_incoming(
                             &"GET" | &"get" => {
                                 elt_iter.next().and_then(DataType::try_extract).map(|k| {
                                     let guard = db_arc.read().unwrap();
-                                    RESPCommand::Get(guard.get(k).cloned())
+                                    RESPCommand::Get(
+                                        guard
+                                            .get(k)
+                                            .and_then(|(k, timer_opt)| match timer_opt {
+                                                Some((start, timeout)) => {
+                                                    if start.elapsed() < *timeout {
+                                                        Some(k)
+                                                    } else {
+                                                        None
+                                                    }
+                                                }
+                                                None => Some(k),
+                                            })
+                                            .cloned(),
+                                    )
                                 })
                             }
                             _ => None,
