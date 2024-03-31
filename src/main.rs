@@ -346,7 +346,10 @@ fn handle_incoming(
                                                     .and_then(DataType::try_extract)
                                                     .and_then(|d| d.parse().ok())
                                                     .map(|secs| {
-                                                        (Instant::now(), Duration::from_secs(secs))
+                                                        (
+                                                            Instant::now(),
+                                                            Duration::from_millis(secs),
+                                                        )
                                                     })
                                             }
                                             rw_guard.insert(k.into(), (v.into(), timer));
