@@ -289,7 +289,7 @@ fn handle_incoming(
         // };
         let s_s = s.as_str();
         let data = DataType::try_from(s_s)?;
-        println!("Parsed: {data}");
+        println!("Parsed: {data:?}");
         use DataType::*;
         let commands: Vec<RESPCommand> = match data {
             BulkString(None) => vec![],
