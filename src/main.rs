@@ -43,63 +43,68 @@ impl fmt::Display for DataType<'_> {
 impl<'a> TryFrom<&'a str> for DataType<'a> {
     type Error = io::Error;
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        use io::ErrorKind::InvalidData;
         use DataType::*;
-        match value.split_once("\r\n") {
-            Some((hd, mut tl)) => match hd.split_at(1) {
-                ("*", count) => {
-                    let count: usize = count.parse().map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "Failed to parse array-count")
-                    })?;
-                    let mut buf = vec![];
-                    for _ in 0..count {
-                        let (segment, remainder) = DataType::chainparse(tl)?;
-                        tl = remainder.unwrap_or_default();
-                        buf.push(segment);
-                    }
-                    Ok(Self::Array(buf))
+        let organize_split = |(hd, tl): (&'a str, &'a str)| {
+            let (prefix, hd) = hd.split_at(1);
+            (prefix, hd, tl)
+        };
+        match value.split_once("\r\n").map(organize_split) {
+            Some(("*", count, mut tl)) => {
+                let count: usize = count
+                    .parse()
+                    .map_err(|_| io::Error::new(InvalidData, "Failed to parse array-count"))?;
+                let mut buf = vec![];
+                for _ in 0..count {
+                    let (segment, remainder) = DataType::chainparse(tl)?;
+                    tl = remainder.unwrap_or_default();
+                    buf.push(segment);
                 }
-                ("$", len) => {
-                    let into_io_error = |e: ParseIntError| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("Failed to parse bulk-string length {len} ({:?})", e.kind()),
-                        )
-                    };
-                    let length_error = |data_type: &str| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("Invalid length {len} for {data_type} {tl}"),
-                        )
-                    };
-                    let try_into_bulk_string = |len: usize| match tl.get(0..len) {
-                        Some(content) => Ok(BulkString(Some(content))),
-                        None => Err(length_error("bulk-string")),
-                    };
-                    let try_into_null_bulk_string = |len: isize| match len {
-                        -1 => Ok(BulkString(None)),
-                        _ => Err(length_error("presumed null bulk-string")),
-                    };
-                    len.parse()
+                Ok(Array(buf))
+            }
+
+            Some(("$", len, tl)) => {
+                let into_io_error = |e: ParseIntError| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to parse bulk-string length {len} ({:?})", e.kind()),
+                    )
+                };
+                let length_error = |data_type: &str| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Invalid length {len} for {data_type} {tl}"),
+                    )
+                };
+                let try_into_bulk_string = |len: usize| match tl.get(0..len) {
+                    Some(content) => Ok(BulkString(Some(content))),
+                    None => Err(length_error("bulk-string")),
+                };
+                let try_into_null_bulk_string = |len: isize| match len {
+                    -1 => Ok(BulkString(None)),
+                    _ => Err(length_error("presumed null bulk-string")),
+                };
+                len.parse()
+                    .map_err(into_io_error)
+                    .and_then(try_into_bulk_string)
+                    .or(len
+                        .parse()
                         .map_err(into_io_error)
-                        .and_then(try_into_bulk_string)
-                        .or(len
-                            .parse()
-                            .map_err(into_io_error)
-                            .and_then(try_into_null_bulk_string))
-                    // let len: usize = len.parse().map_err(|_| {
-                    //     io::Error::new(
-                    //         io::ErrorKind::InvalidData,
-                    //         "Failed to parse bulk-string length",
-                    //     )
-                    // })?;
-                    // Ok(Self::BulkString(tl.get(0..len).unwrap_or_default()))
-                }
-                _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown")),
-            },
+                        .and_then(try_into_null_bulk_string))
+                // let len: usize = len.parse().map_err(|_| {
+                //     io::Error::new(
+                //         io::ErrorKind::InvalidData,
+                //         "Failed to parse bulk-string length",
+                //     )
+                // })?;
+                // Ok(Self::BulkString(tl.get(0..len).unwrap_or_default()))
+                // }
+            }
             None => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Missing delimiter",
             )),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown")),
         }
     }
 }
@@ -172,16 +177,15 @@ impl<'a> TryFrom<Vec<u8>> for RESPCommand<'a> {
 impl fmt::Display for RESPCommand<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use RESPCommand::*;
-        match self {
+        let s = match self {
             Ping(Some(_payload)) => todo!(),
-            Ping(None) => f.write_str(DataType::SimpleString("PONG").to_string().as_str()),
-            Echo(s) => f.write_str(DataType::BulkString(Some(s)).to_string().as_str()),
-            Set => f.write_str(DataType::SimpleString("OK").to_string().as_str()),
-            Get(Some(s)) => {
-                f.write_str(DataType::BulkString(Some(s.as_str())).to_string().as_str())
-            }
-            Get(None) => f.write_str(DataType::BulkString(None).to_string().as_str()),
-        }
+            Ping(None) => DataType::SimpleString("PONG"),
+            Echo(s) => DataType::BulkString(Some(s)),
+            Set => DataType::SimpleString("OK"),
+            Get(Some(s)) => DataType::BulkString(Some(s.as_str())),
+            Get(None) => DataType::BulkString(None),
+        };
+        f.write_fmt(format_args!("{}", s))
     }
 }
 pub trait Spawner<'a, T> {
