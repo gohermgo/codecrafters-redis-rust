@@ -1,10 +1,10 @@
+#![allow(clippy::pedantic)]
 use std::{
     collections::HashMap,
-    fmt,
+    env, fmt,
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     num::ParseIntError,
-    slice::Iter,
     str::FromStr,
     sync::{
         // mpsc::{self, Receiver, Sender},
@@ -12,7 +12,7 @@ use std::{
         // Mutex,
         RwLock,
     },
-    time::{Duration, Instant}, // thread::JoinHandle,
+    time::{Duration, Instant},
     vec::IntoIter,
 };
 
@@ -132,6 +132,7 @@ impl<'a> DataType<'a> {
             None => Ok((segment, None)),
         }
     }
+    #[allow(dead_code)]
     fn try_extract(&self) -> Option<&'a str> {
         match self {
             Self::SimpleString(s) => Some(s),
@@ -148,14 +149,14 @@ impl<'a> DataType<'a> {
     }
 }
 
-pub enum RESPCommand<'a> {
+pub enum Command<'a> {
     Ping(Option<&'a str>),
     Echo(&'a str),
     Set,
     Get(Option<String>),
 }
 
-impl<'a> FromStr for RESPCommand<'a> {
+impl<'a> FromStr for Command<'a> {
     type Err = io::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         println!("RESPCommand FromStr {s}");
@@ -164,29 +165,29 @@ impl<'a> FromStr for RESPCommand<'a> {
         };
 
         match s.split_once(' ') {
-            Some((hd, tl)) => RESPCommand::match_command_with_payload(hd, tl),
-            None => RESPCommand::match_command(s),
+            Some((hd, tl)) => Command::match_command_with_payload(hd, tl),
+            None => Command::match_command(s),
         }
     }
 }
 
-impl<'a> TryFrom<&[u8]> for RESPCommand<'a> {
+impl<'a> TryFrom<&[u8]> for Command<'a> {
     type Error = io::Error;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        RESPCommand::from_str(&value.iter().map(|byte| *byte as char).collect::<String>())
+        Command::from_str(&value.iter().map(|byte| *byte as char).collect::<String>())
     }
 }
 
-impl<'a> TryFrom<Vec<u8>> for RESPCommand<'a> {
+impl<'a> TryFrom<Vec<u8>> for Command<'a> {
     type Error = io::Error;
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        RESPCommand::try_from(value.as_slice())
+        Command::try_from(value.as_slice())
     }
 }
 
-impl fmt::Display for RESPCommand<'_> {
+impl fmt::Display for Command<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use RESPCommand::*;
+        use Command::*;
         let s = match self {
             Ping(Some(_payload)) => todo!(),
             Ping(None) => DataType::SimpleString("PONG"),
@@ -267,22 +268,20 @@ pub trait MutSpawner<'a, T> {
 //     data: DataType<'a>,
 // }
 
-impl<'a> RESPCommand<'a> {
+impl<'a> Command<'a> {
     fn match_command_with_payload<'b>(
         _command: &'b str,
         _payload: &'b str,
     ) -> Result<Self, io::Error> {
         todo!()
     }
-    fn match_command(command: &str) -> Result<RESPCommand<'a>, io::Error> {
+    fn match_command(command: &str) -> Result<Command<'a>, io::Error> {
         match command {
-            "PING" | "ping" => Ok(RESPCommand::Ping(None)),
+            "PING" | "ping" => Ok(Command::Ping(None)),
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, command)),
         }
     }
 }
-
-type OptionalTimer = Option<(Instant, Duration)>;
 pub struct MapValueTimer {
     start: Instant,
     timeout: Duration,
@@ -368,45 +367,43 @@ fn handle_incoming(mut stream: TcpStream, db_arc: ThreadSafeDataMap) -> io::Resu
             break;
         }
         println!("read {bytes_read} bytes");
-        let s: String = buf[0..bytes_read]
-            .iter()
-            .map(|byte| *byte as char)
-            .collect();
-        // let match_opt = |data: &RESPData<'_>| match data {
-        //     RESPData::BulkStr(s) | RESPData::Str(s) => RESPCommand::from_str(s).ok(),
-        //     _ => None,
-        // };
-        let s_s = s.as_str();
-        let data = DataType::try_from(s_s)?;
+        let data = std::str::from_utf8(&buf[0..bytes_read])
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Non-utf8 str received {e:?}"),
+                )
+            })
+            .and_then(DataType::try_from)?;
         println!("Parsed: {data:?}");
+        use Command::*;
         use DataType::*;
-        let commands: Vec<RESPCommand> = match data {
+        let commands: Vec<Command> = match data {
             BulkString(None) => vec![],
-            BulkString(Some(s)) | DataType::SimpleString(s) => vec![RESPCommand::from_str(s)]
+            BulkString(Some(s)) | SimpleString(s) => vec![Command::from_str(s)]
                 .into_iter()
                 .filter_map(|r| r.ok())
                 .collect(),
-            DataType::Array(elts) => {
+            Array(elts) => {
                 println!("Parsing array");
                 let mut commands = vec![];
                 let mut elt_iter = elts.into_iter();
                 while let Some(elt) = elt_iter.next() {
                     let command_opt = match elt {
-                        DataType::SimpleString(s) | DataType::BulkString(Some(s)) => match s {
+                        SimpleString(s) | BulkString(Some(s)) => match s {
                             "ECHO" | "echo" => elt_iter.next().and_then(|payload| match payload {
-                                DataType::SimpleString(to_echo)
-                                | DataType::BulkString(Some(to_echo)) => {
-                                    Some(RESPCommand::Echo(to_echo))
+                                SimpleString(to_echo) | BulkString(Some(to_echo)) => {
+                                    Some(Echo(to_echo))
                                 }
                                 _ => None,
                             }),
-                            "PING" | "ping" => Some(RESPCommand::Ping(elt_iter.next().and_then(
-                                |elt| match elt {
-                                    DataType::SimpleString(to_ping) => Some(to_ping),
-                                    DataType::BulkString(to_ping) => to_ping,
+                            "PING" | "ping" => {
+                                Some(Ping(elt_iter.next().and_then(|elt| match elt {
+                                    SimpleString(to_ping) => Some(to_ping),
+                                    BulkString(to_ping) => to_ping,
                                     _ => None,
-                                },
-                            ))),
+                                })))
+                            }
                             "SET" | "set" => {
                                 let map_entry = MapEntry::try_from(&mut elt_iter)?;
                                 {
@@ -415,48 +412,23 @@ fn handle_incoming(mut stream: TcpStream, db_arc: ThreadSafeDataMap) -> io::Resu
                                     let v = map_entry.value;
                                     write_guard.insert(k, v)
                                 };
-                                Some(RESPCommand::Set)
+                                Some(Set)
                             }
-                            // &"SET" | &"set" => elt_iter.next().and_then(|k| {
-                            //     match (
-                            //         k.try_extract(),
-                            //         elt_iter.next().and_then(DataType::try_extract),
-                            //     ) {
-                            //         (Some(k), Some(v)) => {
-                            //             let mut rw_guard = db_arc.write().unwrap();
-                            //             let mut timer = None;
-                            //             if let Some("px") =
-                            //                 elt_iter.next().and_then(DataType::try_extract)
-                            //             {
-                            //                 timer = elt_iter
-                            //                     .next()
-                            //                     .and_then(DataType::try_extract)
-                            //                     .and_then(|d| d.parse().ok())
-                            //                     .map(|secs| {
-                            //                         (Instant::now(), Duration::from_millis(secs))
-                            //                     })
-                            //             }
-                            //             rw_guard.insert(k.into(), (v.into(), timer));
-                            //             Some(RESPCommand::Set)
-                            //         }
-                            //         _ => None,
-                            //     }
-                            // }),
                             "GET" | "get" => {
                                 elt_iter.next().and_then(DataType::try_take).map(|k| {
                                     let guard = db_arc.read().unwrap();
-                                    RESPCommand::Get(
-                                        guard
-                                            .get(k)
-                                            .and_then(|v| {
+                                    Get(guard
+                                        .get(k)
+                                        .and_then(
+                                            |v| {
                                                 if v.is_expired() {
                                                     None
                                                 } else {
                                                     Some(&v.data)
                                                 }
-                                            })
-                                            .cloned(),
-                                    )
+                                            },
+                                        )
+                                        .cloned())
                                 })
                             }
                             _ => None,
@@ -477,11 +449,22 @@ fn handle_incoming(mut stream: TcpStream, db_arc: ThreadSafeDataMap) -> io::Resu
     Ok(())
 }
 
+fn parse_port_argument(mut args: env::Args) -> Option<String> {
+    while let Some(arg) = args.next() {
+        if arg == *"--port" {
+            return args.next();
+        }
+    }
+    None
+}
+
 fn main() -> io::Result<()> {
+    let arg_iter = env::args();
+    let port = parse_port_argument(arg_iter).unwrap_or("6379".into());
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     // println!("Logs from your program will appear here!");
 
-    let listener = TcpListener::bind("127.0.0.1:6379")?;
+    let listener = TcpListener::bind(format!("{}:{}", "127.0.0.1", port))?;
 
     let db = HashMap::new();
     let safe_db = RwLock::new(db);
