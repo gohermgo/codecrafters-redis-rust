@@ -4,6 +4,7 @@ use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     num::ParseIntError,
+    slice::Iter,
     str::FromStr,
     sync::{
         // mpsc::{self, Receiver, Sender},
@@ -12,6 +13,7 @@ use std::{
         RwLock,
     },
     time::{Duration, Instant}, // thread::JoinHandle,
+    vec::IntoIter,
 };
 
 #[derive(Debug)]
@@ -134,6 +136,13 @@ impl<'a> DataType<'a> {
         match self {
             Self::SimpleString(s) => Some(s),
             Self::BulkString(s) => *s,
+            _ => None,
+        }
+    }
+    fn try_take(self) -> Option<&'a str> {
+        match self {
+            Self::SimpleString(s) => Some(s),
+            Self::BulkString(s) => s,
             _ => None,
         }
     }
@@ -274,8 +283,81 @@ impl<'a> RESPCommand<'a> {
 }
 
 type OptionalTimer = Option<(Instant, Duration)>;
-type DataMapValue = (String, OptionalTimer);
-type DataMap = HashMap<String, DataMapValue>;
+pub struct MapValueTimer {
+    start: Instant,
+    timeout: Duration,
+}
+impl MapValueTimer {
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            start: Instant::now(),
+            timeout,
+        }
+    }
+    fn is_expired(&self) -> bool {
+        self.start.elapsed() >= self.timeout
+    }
+}
+pub struct MapValue {
+    data: String,
+    timer: Option<MapValueTimer>,
+}
+impl MapValue {
+    fn is_expired(&self) -> bool {
+        if let Some(timer) = &self.timer {
+            timer.is_expired()
+        } else {
+            false
+        }
+    }
+}
+pub struct MapEntry {
+    key: String,
+    value: MapValue,
+}
+// Handling of SET logic
+impl<'a> TryFrom<&mut IntoIter<DataType<'a>>> for MapEntry {
+    type Error = io::Error;
+    fn try_from(value: &mut IntoIter<DataType<'a>>) -> Result<Self, Self::Error> {
+        let key_val_opt = value.next().and_then(DataType::try_take).and_then(|key| {
+            value
+                .next()
+                .and_then(DataType::try_take)
+                .map(|val| (key.to_string(), val.to_string()))
+        });
+
+        match key_val_opt {
+            Some((key, data)) => {
+                let timer = value
+                    .next()
+                    .and_then(DataType::try_take)
+                    .and_then(|contained| {
+                        if contained == "px" {
+                            value
+                                .next()
+                                .and_then(DataType::try_take)
+                                .and_then(|timeout_str| timeout_str.parse().ok())
+                                .map(Duration::from_millis)
+                                .map(MapValueTimer::new)
+                        } else {
+                            None
+                        }
+                    });
+
+                Ok(MapEntry {
+                    key,
+                    value: MapValue { data, timer },
+                })
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Failed to parse key-value pair",
+            )),
+        }
+    }
+}
+// type DataMapValue = (String, OptionalTimer);
+type DataMap = HashMap<String, MapValue>;
 type ThreadSafeDataMap = Arc<RwLock<DataMap>>;
 fn handle_incoming(mut stream: TcpStream, db_arc: ThreadSafeDataMap) -> io::Result<()> {
     loop {
@@ -307,80 +389,71 @@ fn handle_incoming(mut stream: TcpStream, db_arc: ThreadSafeDataMap) -> io::Resu
             DataType::Array(elts) => {
                 println!("Parsing array");
                 let mut commands = vec![];
-                let mut elt_iter = elts.iter();
+                let mut elt_iter = elts.into_iter();
                 while let Some(elt) = elt_iter.next() {
                     let command_opt = match elt {
                         DataType::SimpleString(s) | DataType::BulkString(Some(s)) => match s {
-                            &"ECHO" | &"echo" => {
-                                elt_iter.next().and_then(|payload| match payload {
-                                    DataType::SimpleString(to_echo)
-                                    | DataType::BulkString(Some(to_echo)) => {
-                                        Some(RESPCommand::Echo(to_echo))
-                                    }
-                                    _ => None,
-                                })
-                            }
-                            &"PING" | &"ping" => Some(RESPCommand::Ping(elt_iter.next().and_then(
+                            "ECHO" | "echo" => elt_iter.next().and_then(|payload| match payload {
+                                DataType::SimpleString(to_echo)
+                                | DataType::BulkString(Some(to_echo)) => {
+                                    Some(RESPCommand::Echo(to_echo))
+                                }
+                                _ => None,
+                            }),
+                            "PING" | "ping" => Some(RESPCommand::Ping(elt_iter.next().and_then(
                                 |elt| match elt {
-                                    DataType::SimpleString(to_ping) => Some(*to_ping),
-                                    DataType::BulkString(to_ping) => *to_ping,
+                                    DataType::SimpleString(to_ping) => Some(to_ping),
+                                    DataType::BulkString(to_ping) => to_ping,
                                     _ => None,
                                 },
                             ))),
-                            &"SET" | &"set" => {
-                                elt_iter.next().and_then(|k| {
-                                    match (
-                                        k.try_extract(),
-                                        elt_iter.next().and_then(DataType::try_extract),
-                                    ) {
-                                        (Some(k), Some(v)) => {
-                                            let mut rw_guard = db_arc.write().unwrap();
-                                            let mut timer = None;
-                                            if let Some("px") =
-                                                elt_iter.next().and_then(DataType::try_extract)
-                                            {
-                                                timer = elt_iter
-                                                    .next()
-                                                    .and_then(DataType::try_extract)
-                                                    .and_then(|d| d.parse().ok())
-                                                    .map(|secs| {
-                                                        (
-                                                            Instant::now(),
-                                                            Duration::from_millis(secs),
-                                                        )
-                                                    })
-                                            }
-                                            rw_guard.insert(k.into(), (v.into(), timer));
-                                            Some(RESPCommand::Set)
-                                        }
-                                        _ => None,
-                                    }
-                                })
-                                // if let Some(x) = elt_iter.next().map(|k| (match k {
-                                //     RESPData::Str(s) | RESPData::BulkStr(s) => Some(*s),
-                                //     _ => None
-                                //     }, elt_iter.next().map(|v| match v {
-                                //     RESPData::Str(s) | RESPData::BulkStr(s) => Some(*s),
-                                //     _ => None
-                                // })) {
-                                //     todo!()
-                                // };
+                            "SET" | "set" => {
+                                let map_entry = MapEntry::try_from(&mut elt_iter)?;
+                                {
+                                    let mut write_guard = db_arc.write().unwrap();
+                                    let k = map_entry.key;
+                                    let v = map_entry.value;
+                                    write_guard.insert(k, v)
+                                };
+                                Some(RESPCommand::Set)
                             }
-                            &"GET" | &"get" => {
-                                elt_iter.next().and_then(DataType::try_extract).map(|k| {
+                            // &"SET" | &"set" => elt_iter.next().and_then(|k| {
+                            //     match (
+                            //         k.try_extract(),
+                            //         elt_iter.next().and_then(DataType::try_extract),
+                            //     ) {
+                            //         (Some(k), Some(v)) => {
+                            //             let mut rw_guard = db_arc.write().unwrap();
+                            //             let mut timer = None;
+                            //             if let Some("px") =
+                            //                 elt_iter.next().and_then(DataType::try_extract)
+                            //             {
+                            //                 timer = elt_iter
+                            //                     .next()
+                            //                     .and_then(DataType::try_extract)
+                            //                     .and_then(|d| d.parse().ok())
+                            //                     .map(|secs| {
+                            //                         (Instant::now(), Duration::from_millis(secs))
+                            //                     })
+                            //             }
+                            //             rw_guard.insert(k.into(), (v.into(), timer));
+                            //             Some(RESPCommand::Set)
+                            //         }
+                            //         _ => None,
+                            //     }
+                            // }),
+                            "GET" | "get" => {
+                                elt_iter.next().and_then(DataType::try_take).map(|k| {
                                     let guard = db_arc.read().unwrap();
                                     RESPCommand::Get(
                                         guard
                                             .get(k)
-                                            .and_then(|(k, timer_opt)| match timer_opt {
-                                                Some((start, timeout)) => {
-                                                    if start.elapsed() < *timeout {
-                                                        Some(k)
-                                                    } else {
-                                                        None
-                                                    }
+                                            .and_then(|v| {
+                                                if v.is_expired() {
+                                                    None
+                                                } else {
+                                                    Some(&v.data)
                                                 }
-                                                None => Some(k),
                                             })
                                             .cloned(),
                                     )
